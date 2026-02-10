@@ -38,13 +38,12 @@ public class UniTaskAsyncLock : IAsyncLock
     public void Wait()
     {
         CheckDispose();
-        var waitSuccessful = false;
         var lockTaken = false;
 
         try
         {
             // Perf: first spin wait for the count to be positive.
-            if (currentResourceCount == 0)
+            if (Volatile.Read(ref currentResourceCount) == 0)
             {
                 // Monitor.Enter followed by Monitor.Wait is much more expensive than waiting on an event as it involves another
                 // spin, contention, etc. The usual number of spin iterations that would otherwise be used here is increased to
@@ -55,7 +54,7 @@ public class UniTaskAsyncLock : IAsyncLock
                 while (spinner.Count < spinCount)
                 {
                     spinner.SpinOnce();
-                    if (currentResourceCount != 0)
+                    if (Volatile.Read(ref currentResourceCount) != 0)
                     {
                         break;
                     }
@@ -66,19 +65,14 @@ public class UniTaskAsyncLock : IAsyncLock
             Monitor.Enter(syncRoot, ref lockTaken);
             waitCount++;
 
-            // Wait
-            if (currentResourceCount == 0)
+            // Wait until the resource becomes available
+            while (currentResourceCount == 0)
             {
-                waitSuccessful = Monitor.Wait(syncRoot, Timeout.Infinite);
+                Monitor.Wait(syncRoot, Timeout.Infinite);
+                if (countOfWaitersPulsedToWake != 0)
+                    countOfWaitersPulsedToWake--;
             }
-
-            // // acquired
-            // Debug.Assert(!waitSuccessful || currentResourceCount > 0,
-            //     "If the wait was successful, there should be count available.");
-            if (currentResourceCount > 0)
-            {
-                currentResourceCount--;
-            }
+            currentResourceCount--;
         }
         finally
         {
@@ -95,45 +89,34 @@ public class UniTaskAsyncLock : IAsyncLock
     {
         CheckDispose();
 
-        var releaseCount = 1;
+        AutoResetUniTaskCompletionSource? asyncWaiterToRelease = null;
         lock (syncRoot)
         {
-            var currentResourceCountLocal = currentResourceCount;
-            if (maxResourceCount - currentResourceCountLocal < releaseCount)
+            if (currentResourceCount >= maxResourceCount)
             {
                 throw new InvalidOperationException();
             }
 
-            currentResourceCountLocal += releaseCount;
-
-            // Signal to any synchronous waiters
-            var waitCountLocal = waitCount;
-            var waitersToNotify = Math.Min(currentResourceCountLocal, waitCountLocal) - countOfWaitersPulsedToWake;
-            if (waitersToNotify > 0)
+            // Try to hand off directly to an async waiter first
+            if (asyncWaitingQueue.TryDequeue(out var waitingTask))
             {
-                if (waitersToNotify > releaseCount)
-                {
-                    waitersToNotify = releaseCount;
-                }
-
-                countOfWaitersPulsedToWake += waitersToNotify;
-                for (var i = 0; i < waitersToNotify; i++)
-                {
-                    Monitor.Pulse(syncRoot);
-                }
+                asyncWaiterToRelease = waitingTask;
             }
-
-            var maxAsyncToRelease = currentResourceCountLocal;
-            for (var i = 0; i < maxAsyncToRelease; i++)
+            // Or wake a synchronous waiter
+            else if (waitCount > countOfWaitersPulsedToWake)
             {
-                if (asyncWaitingQueue.TryDequeue(out var waitingTask))
-                {
-                    --currentResourceCountLocal;
-                    waitingTask.TrySetResult();
-                }
+                currentResourceCount++;
+                countOfWaitersPulsedToWake++;
+                Monitor.Pulse(syncRoot);
             }
-            currentResourceCount = currentResourceCountLocal;
+            // Otherwise just make the resource available
+            else
+            {
+                currentResourceCount++;
+            }
         }
+        // Signal async waiter outside the lock to avoid potential re-entrant deadlock
+        asyncWaiterToRelease?.TrySetResult();
     }
 
     public void Dispose()
