@@ -154,6 +154,11 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
         hasInterceptor = count > 0;
     }
 
+    public void RemoveAllFilters()
+    {
+        interceptors.Clear();
+    }
+
     public Router WithFilter(ICommandInterceptor interceptor)
     {
         var filtered = Clone();
@@ -169,9 +174,8 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
         if (!disposed)
         {
             disposed = true;
-            subscribers.Clear();
-            asyncSubscribers.Clear();
-            interceptors.Clear();
+            UnsubscribeAll();
+            RemoveAllFilters();
         }
     }
 
