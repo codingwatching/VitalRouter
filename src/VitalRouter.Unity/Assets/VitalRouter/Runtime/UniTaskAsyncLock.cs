@@ -87,7 +87,7 @@ public class UniTaskAsyncLock : IAsyncLock
 
     public void Release()
     {
-        CheckDispose();
+        if (disposed) return;
 
         AutoResetUniTaskCompletionSource? asyncWaiterToRelease = null;
         lock (syncRoot)
