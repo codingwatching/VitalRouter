@@ -85,7 +85,7 @@ For more information about Interceptors, please refer to the [Interceptor](../pi
 
 ## Resolving
 
-If `RegisterVitalRouter` is set, the Router and its interface, `ICommandPublisher` and `ICommandSubscriber` can be retrieved from the DI container.
+If `RegisterVitalRouter` is set, the Router and its interface, `ICommandPublisher` and `ICommandSubscribable` can be retrieved from the DI container.
 
 ```cs
 class HogeController
