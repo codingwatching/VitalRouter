@@ -21,7 +21,7 @@ The following NuGet packages are available.
 ### Unity
 
 > [!NOTE]
-> Requirements: Unity 20222.2+
+> Requirements: Unity 2022.2+
 > This limitation is due to the use of the Incremental Source Generator.
 
 1. Install [NugetForUnity](https://github.com/GlitchEnzo/NuGetForUnity).

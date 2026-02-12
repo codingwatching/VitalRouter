@@ -44,7 +44,7 @@ class MyFilter : ICommandInterceptor
         PublishContinuation next)  
         where T : ICommand  
     {
-        context.Extensiont.TryAdd("CustomData", 123456789);
+        context.Extensions.TryAdd("CustomData", 123456789);
         await next(command, context);
     }		
 }

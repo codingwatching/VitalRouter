@@ -31,7 +31,7 @@ In this case, publisher is also injectable.
 
 ## Resolving
 
-If `AddVitalRouter` is set, `Router`, its interface, `ICommandPublisher` and `ICommandSubscriber` can be retrieved from the DI container.
+If `AddVitalRouter` is set, `Router`, its interface, `ICommandPublisher` and `ICommandSubscribable` can be retrieved from the DI container.
 
 ```cs
 class HogeController
