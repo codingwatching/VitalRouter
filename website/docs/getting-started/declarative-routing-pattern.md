@@ -12,7 +12,7 @@ Types with `[Routes]` attribute must be `partial`. This is because some methods 
 
 ```cs
 [Routes]
-public partial class FooPresentor
+public partial class FooPresenter
 {
   // ...
 }
@@ -23,7 +23,7 @@ Appending `[Route]` to a method of this class will cause the command to be deliv
 
 ```cs
 [Routes]
-public partial class FooPresentor
+public partial class FooPresenter
 {
    [Route]
    void On(FooCommand cmd)
@@ -140,7 +140,7 @@ To configure the behavior in this case, specify `CommandOrdering`.
 
 ```cs
 [Routes(CommandOrdering.Sequential)] // < Order control of the commands delivered to this type.
-public partial class FooPresentor
+public partial class FooPresenter
 {
     async ValueTask On(FooCommand cmd)
     {
