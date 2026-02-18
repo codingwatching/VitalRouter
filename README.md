@@ -183,7 +183,7 @@ Requirements: UniTask >= 2.5.5
 
 If you prefer UPM, you can install the assembly for Unity via Git URL:
 ```text
-https://github.com/hadashiA/VitalRouter.git?path=/src/VitalRouter.Unity/Assets/VitalRouter#2.1.0
+https://github.com/hadashiA/VitalRouter.git?path=/src/VitalRouter.Unity/Assets/VitalRouter#2.2.0
 ```
 
 ---
