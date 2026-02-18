@@ -166,6 +166,62 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
         return filtered;
     }
 
+    // TODO:
+    public bool HasInterceptor() => HasFilter();
+    public bool HasInterceptor<T>() where T : ICommandInterceptor => HasFilter<T>();
+
+    public bool HasFilter() => hasInterceptor;
+
+    public bool HasFilter<T>() where T : class, ICommandInterceptor => FindFilter<T>() != null;
+
+    public bool HasFilter<T>(Func<T, bool> predicate)
+        where T : class, ICommandInterceptor =>
+        FindFilter(predicate) != null;
+
+    public bool HasFilter<T, TState>(Func<T, TState, bool> predicate, TState state)
+        where T : class, ICommandInterceptor =>
+        FindFilter(predicate, state) != null;
+
+    public T? FindFilter<T>() where T : class, ICommandInterceptor =>
+        FindFilter(x => x is T) as T;
+
+    public T? FindFilter<T>(Func<T, bool> predicate) where T : class, ICommandInterceptor
+    {
+        foreach (var interceptorOrNull in interceptors.AsSpan())
+        {
+            if (interceptorOrNull is T x && predicate(x))
+            {
+                return x;
+            }
+        }
+        return null;
+    }
+
+    public T? FindFilter<T, TState>(Func<T, TState, bool> predicate, TState state)
+        where T : class, ICommandInterceptor
+    {
+        foreach (var interceptorOrNull in interceptors.AsSpan())
+        {
+            if (interceptorOrNull is T x && predicate(x, state))
+            {
+                return x;
+            }
+        }
+        return null;
+    }
+
+    public ICommandInterceptor? FindFilter(Func<ICommandInterceptor, bool> predicate)
+    {
+        foreach (var interceptorOrNull in interceptors.AsSpan())
+        {
+            if (interceptorOrNull is { } x && predicate(x))
+            {
+                return x;
+            }
+        }
+        return null;
+    }
+
     ICommandPublisher ICommandPublisher.WithFilter(ICommandInterceptor interceptor) => WithFilter(interceptor);
     ICommandSubscribable ICommandSubscribable.WithFilter(ICommandInterceptor interceptor) => WithFilter(interceptor);
 
@@ -177,21 +233,6 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
             UnsubscribeAll();
             RemoveAllFilters();
         }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool HasInterceptor() => hasInterceptor;
-
-    public bool HasInterceptor<T>() where T : ICommandInterceptor
-    {
-        foreach (var interceptorOrNull in interceptors.AsSpan())
-        {
-            if (interceptorOrNull is T)
-            {
-                return true;
-            }
-        }
-        return false;
     }
 
     Router Clone()

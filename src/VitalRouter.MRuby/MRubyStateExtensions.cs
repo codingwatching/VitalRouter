@@ -77,25 +77,27 @@ public static class MRubyStateExtensions
         Irep irep,
         CancellationToken cancellation = default)
     {
-        if (router.HasInterceptor<MRubyStateInterceptor>())
+        var interceptor = router.FindFilter<MRubyStateInterceptor, MRubyState>(
+            (x, xs) => x.MRubyState == xs, mrb);
+
+        if (interceptor != null)
         {
-            throw new InvalidOperationException("Cannot execute multiple routers for the same MRubyState.");
+            if (interceptor.MRubyState != mrb)
+            {
+                throw new InvalidOperationException("MRubyState already exists");
+            }
+        }
+        else
+        {
+            var filter = new MRubyStateInterceptor(mrb);
+            router.AddFilter(filter);
         }
 
-        var filter = new MRubyStateInterceptor(mrb);
-        router.AddFilter(filter);
-        try
-        {
-            var proc = mrb.CreateProc(irep);
-            var fiber = mrb.CreateFiber(proc);
+        var proc = mrb.CreateProc(irep);
+        var fiber = mrb.CreateFiber(proc);
 
-            using var script = new MRubyRoutingScript(fiber, router);
-            await script.RunAsync(cancellation);
-        }
-        finally
-        {
-            router.RemoveFilter(filter);
-        }
+        using var script = new MRubyRoutingScript(fiber, router);
+        await script.RunAsync(cancellation);
     }
 
     public static void TryDefineVitalRouter(this MRubyState mrb, out RClass module)
