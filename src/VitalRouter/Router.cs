@@ -168,7 +168,7 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
 
     // TODO:
     public bool HasInterceptor() => HasFilter();
-    public bool HasInterceptor<T>() where T : ICommandInterceptor => HasFilter<T>();
+    public bool HasInterceptor<T>() where T : class, ICommandInterceptor => HasFilter<T>();
 
     public bool HasFilter() => hasInterceptor;
 
