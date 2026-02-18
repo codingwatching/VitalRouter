@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using MRubyCS.Serializer;
 using VitalRouter;
@@ -21,11 +23,13 @@ public partial struct MoveCommand : ICommand
 
 public class TestCommandRecorder : IAsyncCommandSubscriber
 {
-    public readonly List<ICommand> Received = new();
+    readonly ConcurrentQueue<ICommand> received = new();
+
+    public IReadOnlyList<ICommand> Received => received.ToList();
 
     public ValueTask ReceiveAsync<T>(T command, PublishContext context) where T : ICommand
     {
-        Received.Add(command);
+        received.Enqueue(command);
         return default;
     }
 }

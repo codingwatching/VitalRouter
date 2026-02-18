@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MRubyCS;
@@ -156,6 +157,46 @@ cmd :test, value: 3
         {
             await mrb.ExecuteAsync(router, irep, cts.Token);
         });
+    }
+
+    [Test]
+    public async Task ConcurrentScriptsOnSameRouter()
+    {
+        var mrb2 = MRubyState.Create();
+        using var compiler2 = MRubyCompiler.Create(mrb2);
+
+        mrb2.DefineVitalRouter(x =>
+        {
+            x.AddCommand<TestCommand>("test");
+            x.AddCommand<MoveCommand>("move");
+        });
+
+        var irep1 = compiler.Compile(@"
+cmd :test, value: 1
+cmd :test, value: 2
+cmd :test, value: 3
+");
+        var irep2 = compiler2.Compile(@"
+cmd :move, id: 'npc', x: 100, y: 200
+cmd :test, value: 99
+");
+
+        await Task.WhenAll(
+            mrb.ExecuteAsync(router, irep1).AsTask(),
+            mrb2.ExecuteAsync(router, irep2).AsTask()
+        );
+
+        var received = recorder.Received;
+        Assert.That(received, Has.Count.EqualTo(5));
+
+        var testValues = received.OfType<TestCommand>().Select(c => c.Value).OrderBy(v => v).ToList();
+        Assert.That(testValues, Is.EqualTo(new[] { 1, 2, 3, 99 }));
+
+        var moves = received.OfType<MoveCommand>().ToList();
+        Assert.That(moves, Has.Count.EqualTo(1));
+        Assert.That(moves[0].Id, Is.EqualTo("npc"));
+        Assert.That(moves[0].X, Is.EqualTo(100));
+        Assert.That(moves[0].Y, Is.EqualTo(200));
     }
 
     class ContextCaptureSubscriber(Action<PublishContext> onReceive) : IAsyncCommandSubscriber
