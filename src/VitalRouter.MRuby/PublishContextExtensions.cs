@@ -21,15 +21,10 @@ public static class PublishContextExtensions
     }
 }
 
-public sealed class MRubyStateInterceptor : ICommandInterceptor
+public sealed class MRubyStateInterceptor(MRubyState mrb) : ICommandInterceptor
 {
     public const string MRubyStateKey = "VitalRouter.MRubyState";
-    internal readonly MRubyState? MRubyState;
-
-    public MRubyStateInterceptor(MRubyState mrb)
-    {
-        MRubyState = mrb;
-    }
+    public readonly MRubyState? MRubyState = mrb;
 
     public ValueTask InvokeAsync<T>(T command, PublishContext context, PublishContinuation<T> next)
         where T : ICommand
