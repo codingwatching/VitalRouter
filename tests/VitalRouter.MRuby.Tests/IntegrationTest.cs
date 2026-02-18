@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -197,6 +198,151 @@ cmd :test, value: 99
         Assert.That(moves[0].Id, Is.EqualTo("npc"));
         Assert.That(moves[0].X, Is.EqualTo(100));
         Assert.That(moves[0].Y, Is.EqualTo(200));
+    }
+
+    [Test]
+    public async Task AsyncSubscriberAwaited()
+    {
+        // Subscriber that completes asynchronously with a delay.
+        // If the fiber resumes before the handler finishes, the order would break.
+        var order = new ConcurrentQueue<int>();
+        var asyncSubscriber = new AsyncOrderRecorder(order);
+        router.Subscribe(asyncSubscriber);
+
+        var irep = compiler.Compile(@"
+cmd :test, value: 1
+cmd :test, value: 2
+cmd :test, value: 3
+");
+        await mrb.ExecuteAsync(router, irep);
+
+        Assert.That(order.ToArray(), Is.EqualTo(new[] { 1, 2, 3 }));
+    }
+
+    [Test]
+    public async Task AsyncSubscriberModifiesSharedState()
+    {
+        // Async handler writes to shared state; the next Ruby line reads it.
+        // This proves the fiber waits for the async handler to complete.
+        var sharedVars = mrb.GetSharedVariables();
+        var asyncWriter = new AsyncSharedStateWriter(sharedVars);
+        router.Subscribe(asyncWriter);
+
+        var irep = compiler.Compile(@"
+cmd :test, value: 0
+cmd :test, value: state[:counter]
+");
+        await mrb.ExecuteAsync(router, irep);
+
+        var received = recorder.Received;
+        Assert.That(received, Has.Count.EqualTo(2));
+        Assert.That(((TestCommand)received[1]).Value, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task ConcurrentAsyncScriptsOnSameRouter()
+    {
+        // Both scripts use async handlers (Task.Delay).
+        // Script A is started first; while its first cmd is being handled asynchronously,
+        // Script B starts and runs concurrently on the same Router.
+        var order = new ConcurrentQueue<string>();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Script A's handler: blocks on first cmd until gate is opened by Script B's handler
+        var subscriberA = new GatedSubscriber("A", order, gate);
+        var subscriberB = new GateOpenerSubscriber("B", order, gate);
+
+        var mrb2 = MRubyState.Create();
+        using var compiler2 = MRubyCompiler.Create(mrb2);
+
+        mrb2.DefineVitalRouter(x =>
+        {
+            x.AddCommand<TestCommand>("test");
+            x.AddCommand<MoveCommand>("move");
+        });
+
+        router.Subscribe(subscriberA);
+        router.Subscribe(subscriberB);
+
+        var irep1 = compiler.Compile(@"
+cmd :test, value: 1
+cmd :test, value: 2
+");
+        var irep2 = compiler2.Compile(@"
+cmd :move, id: 'b', x: 0, y: 0
+cmd :move, id: 'b', x: 1, y: 1
+");
+
+        var task1 = mrb.ExecuteAsync(router, irep1).AsTask();
+        var task2 = mrb2.ExecuteAsync(router, irep2).AsTask();
+
+        await Task.WhenAll(task1, task2);
+
+        var events = order.ToArray();
+        // B must have started and completed its first cmd while A was waiting on the gate.
+        // So "B:start" appears before "A:end" for the first command.
+        var bStartIndex = Array.IndexOf(events, "B:start");
+        var aEndIndex = Array.IndexOf(events, "A:end");
+        Assert.That(bStartIndex, Is.GreaterThanOrEqualTo(0));
+        Assert.That(aEndIndex, Is.GreaterThanOrEqualTo(0));
+        Assert.That(bStartIndex, Is.LessThan(aEndIndex),
+            $"Expected B to start before A's first cmd finishes. Events: [{string.Join(", ", events)}]");
+    }
+
+    /// <summary>Waits for a gate before completing. Records "A:start" / "A:end".</summary>
+    class GatedSubscriber(string tag, ConcurrentQueue<string> order, TaskCompletionSource gate) : IAsyncCommandSubscriber
+    {
+        public async ValueTask ReceiveAsync<T>(T command, PublishContext context) where T : ICommand
+        {
+            if (command is TestCommand)
+            {
+                order.Enqueue($"{tag}:start");
+                await gate.Task;
+                order.Enqueue($"{tag}:end");
+            }
+        }
+    }
+
+    /// <summary>Opens the gate on first cmd. Records "B:start" / "B:end".</summary>
+    class GateOpenerSubscriber(string tag, ConcurrentQueue<string> order, TaskCompletionSource gate) : IAsyncCommandSubscriber
+    {
+        bool opened;
+
+        public async ValueTask ReceiveAsync<T>(T command, PublishContext context) where T : ICommand
+        {
+            if (command is MoveCommand)
+            {
+                order.Enqueue($"{tag}:start");
+                await Task.Delay(10);
+                if (!opened)
+                {
+                    opened = true;
+                    gate.TrySetResult();
+                }
+                order.Enqueue($"{tag}:end");
+            }
+        }
+    }
+
+    class AsyncOrderRecorder(ConcurrentQueue<int> order) : IAsyncCommandSubscriber
+    {
+        public async ValueTask ReceiveAsync<T>(T command, PublishContext context) where T : ICommand
+        {
+            await Task.Delay(50);
+            if (command is TestCommand tc)
+                order.Enqueue(tc.Value);
+        }
+    }
+
+    class AsyncSharedStateWriter(MRubySharedVariableTable sharedVars) : IAsyncCommandSubscriber
+    {
+        int counter;
+
+        public async ValueTask ReceiveAsync<T>(T command, PublishContext context) where T : ICommand
+        {
+            await Task.Delay(50);
+            sharedVars.Set("counter", Interlocked.Increment(ref counter));
+        }
     }
 
     class ContextCaptureSubscriber(Action<PublishContext> onReceive) : IAsyncCommandSubscriber
