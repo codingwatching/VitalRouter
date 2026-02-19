@@ -179,9 +179,10 @@ Requirements: UniTask >= 2.5.5
 1. Install [NuGetForUnity](https://github.com/GlitchEnzo/NuGetForUnity).
 2. Search and install `VitalRouter` packages in the NuGet window.
 
-**Optional (UPM)**
+**Optional Extensions for Unity**
 
-If you prefer UPM, you can install the assembly for Unity via Git URL:
+By installing the following package, you will be able to use Unity-specific features such as integration with VContainer/UniTask.
+
 ```text
 https://github.com/hadashiA/VitalRouter.git?path=/src/VitalRouter.Unity/Assets/VitalRouter#2.2.0
 ```
