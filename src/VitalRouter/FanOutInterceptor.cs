@@ -7,7 +7,6 @@ namespace VitalRouter
 public class FanOutInterceptor : ICommandInterceptor
 {
     readonly List<ICommandPublisher> subsequents = new();
-    readonly ExpandBuffer<ValueTask> executingTasks = new(4);
 
     public void Add(ICommandPublisher publisher)
     {
@@ -18,22 +17,13 @@ public class FanOutInterceptor : ICommandInterceptor
         where T : ICommand
     {
         await next(command, context);
-        try
-        {
-            var whenAll = ContextPool<ReusableWhenAllSource>.Rent();
-            whenAll.Reset(subsequents.Count);
 
-            foreach (var x in subsequents)
-            {
-                whenAll.AddTask(x.PublishAsync(command, context.CancellationToken));
-            }
-
-            await new ValueTask(whenAll, whenAll.Version);
-        }
-        finally
+        var whenAll = new WhenAllBuilder();
+        foreach (var x in subsequents)
         {
-            executingTasks.Clear();
+            whenAll.Add(x.PublishAsync(command, context.CancellationToken));
         }
+        await whenAll.Build();
     }
 }
 }

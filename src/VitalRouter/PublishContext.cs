@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -12,10 +13,27 @@ static class ContextPool<T> where T : class, new()
 {
     static readonly ConcurrentQueue<T> Items = new();
 
+    // Per-thread cache. Rent/Return usually pair up on the same thread
+    // (synchronously completed publishes), so this avoids any interlocked
+    // operation on the hot path. Reentrant publishes fall back to the shared pool.
+    [ThreadStatic]
+    static T? threadStaticItem;
+
     static T? fastItem;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T Rent()
+    {
+        var value = threadStaticItem;
+        if (value != null)
+        {
+            threadStaticItem = null;
+            return value;
+        }
+        return RentShared();
+    }
+
+    static T RentShared()
     {
         var value = fastItem;
         if (value != null &&
@@ -32,6 +50,16 @@ static class ContextPool<T> where T : class, new()
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Return(T value)
+    {
+        if (threadStaticItem == null)
+        {
+            threadStaticItem = value;
+            return;
+        }
+        ReturnShared(value);
+    }
+
+    static void ReturnShared(T value)
     {
         if (fastItem != null ||
             Interlocked.CompareExchange(ref fastItem, value, null) != null)
@@ -69,8 +97,12 @@ public partial class PublishContext
         return value;
     }
 
+    internal virtual void Return() => ReturnToPool();
+
+    // Non-virtual fast path. Only safe to call when the instance is known to be
+    // exactly PublishContext (i.e. it was obtained via PublishContext.Rent).
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal virtual void Return()
+    internal void ReturnToPool()
     {
         extensions?.Clear();
         ContextPool<PublishContext>.Return(this);
