@@ -9,7 +9,6 @@ using ZeroMessenger;
 using VitalRouter.Benchmark;
 
 [MemoryDiagnoser]
-[InvocationCount(10000)]
 public class PublishAsyncBenchmark
 {
     const int SubscribeCount = 8;
@@ -27,7 +26,8 @@ public class PublishAsyncBenchmark
 
     TestMessage message = new();
 
-    [IterationSetup]
+    // GlobalSetup (not IterationSetup): see PublishBenchmark.Setup for rationale.
+    [GlobalSetup]
     public void Setup()
     {
         static ValueTask Method(int i)

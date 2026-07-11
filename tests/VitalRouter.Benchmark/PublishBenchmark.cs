@@ -9,7 +9,6 @@ using ZeroMessenger;
 using VitalRouter.Benchmark;
 
 [MemoryDiagnoser]
-[InvocationCount(10000)]
 public class PublishBenchmark
 {
     const int SubscribeCount = 8;
@@ -30,7 +29,11 @@ public class PublishBenchmark
 
     TestMessage message = new();
 
-    [IterationSetup]
+    // GlobalSetup (not IterationSetup): the publish benchmarks do not mutate
+    // subscription state, and running DI/MediatR setup on every iteration keeps
+    // JITting new methods, which resets the tiered-compilation call-counting delay
+    // and causes the workload itself to be measured as unoptimized tier-0 code.
+    [GlobalSetup]
     public void Setup()
     {
         static void Method(int i)
