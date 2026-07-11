@@ -42,6 +42,11 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
     public static void RegisterAsyncLock(Func<IAsyncLock> asyncLockFactory) => AsyncLockFactory = asyncLockFactory;
     public static void RegisterYieldAction(Func<CancellationToken, ValueTask> yieldAction) => YieldAction = yieldAction;
 
+    // Anonymous (delegate-based) subscribers are kept in their own lists so the
+    // publish loop can dispatch to them with just a Type comparison + delegate call,
+    // with no per-element type test (see AnonymousSubscriberBase).
+    readonly FreeList<AnonymousSubscriberBase> anonymousSubscribers = new(8);
+    readonly FreeList<AsyncAnonymousSubscriberBase> asyncAnonymousSubscribers = new(8);
     readonly FreeList<ICommandSubscriber> subscribers = new(8);
     readonly FreeList<IAsyncCommandSubscriber> asyncSubscribers = new(8);
     // Cumulative interceptor chain from root to this router. Used when this router
@@ -89,6 +94,7 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ValueTask PublishAsync<T>(T command, CancellationToken cancellation = default)
         where T : ICommand
     {
@@ -111,30 +117,30 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
         FreeList<ICommandInterceptor> filters)
         where T : ICommand
     {
-        ValueTask task;
-        PublishContext context;
         if (hasFilters)
         {
-            var c = PublishContext<T>.Rent(filters, publishCore, cancellation);
-            context = c;
-            task = c.PublishAsync(command);
-        }
-        else
-        {
-            context = PublishContext.Rent(cancellation);
-            task = publishCore.ReceiveAsync(command, context);
+            var filterContext = PublishContext<T>.Rent(filters, publishCore, cancellation);
+            var filterTask = filterContext.PublishAsync(command);
+            if (filterTask.IsCompletedSuccessfully)
+            {
+                filterTask.GetAwaiter().GetResult(); // consume, returning any pooled task source
+                filterContext.Return();
+                return default;
+            }
+            return ContinueAsync(filterTask, filterContext);
         }
 
+        var context = PublishContext.Rent(cancellation);
+        var task = publishCore.ReceiveAsync(command, context);
         if (task.IsCompletedSuccessfully)
         {
-            context.Return();
-            return task;
+            task.GetAwaiter().GetResult(); // consume, returning any pooled task source
+            context.ReturnToPool(); // non-virtual: instance is exactly PublishContext here
+            return default;
         }
-
         return ContinueAsync(task, context);
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        async ValueTask ContinueAsync(ValueTask x, PublishContext c)
+        static async ValueTask ContinueAsync(ValueTask x, PublishContext c)
         {
             try
             {
@@ -149,28 +155,58 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
 
     public Subscription Subscribe(ICommandSubscriber subscriber)
     {
-        subscribers.Add(subscriber);
+        if (subscriber is AnonymousSubscriberBase anonymous)
+        {
+            anonymousSubscribers.Add(anonymous);
+        }
+        else
+        {
+            subscribers.Add(subscriber);
+        }
         return new Subscription(this, subscriber);
     }
 
     public Subscription Subscribe(IAsyncCommandSubscriber subscriber)
     {
-        asyncSubscribers.Add(subscriber);
+        if (subscriber is AsyncAnonymousSubscriberBase anonymous)
+        {
+            asyncAnonymousSubscribers.Add(anonymous);
+        }
+        else
+        {
+            asyncSubscribers.Add(subscriber);
+        }
         return new Subscription(this, subscriber);
     }
 
     public void Unsubscribe(ICommandSubscriber subscriber)
     {
-        subscribers.Remove(subscriber);
+        if (subscriber is AnonymousSubscriberBase anonymous)
+        {
+            anonymousSubscribers.Remove(anonymous);
+        }
+        else
+        {
+            subscribers.Remove(subscriber);
+        }
     }
 
     public void Unsubscribe(IAsyncCommandSubscriber subscriber)
     {
-        asyncSubscribers.Remove(subscriber);
+        if (subscriber is AsyncAnonymousSubscriberBase anonymous)
+        {
+            asyncAnonymousSubscribers.Remove(anonymous);
+        }
+        else
+        {
+            asyncSubscribers.Remove(subscriber);
+        }
     }
 
     public void UnsubscribeAll()
     {
+        anonymousSubscribers.Clear();
+        asyncAnonymousSubscribers.Clear();
         subscribers.Clear();
         asyncSubscribers.Clear();
     }
@@ -335,65 +371,66 @@ public sealed partial class Router : ICommandPublisher, ICommandSubscribable, ID
 
         public ValueTask ReceiveAsync<T>(T command, PublishContext context) where T : ICommand
         {
-            // var subscribers = source.subscribers.AsSpan();
-            var subscribers = source.subscribers.Values;
-            for (var i = source.subscribers.LastIndex; i >= 0; i--)
+            // Hoisted out of the loops: in shared generic code typeof(T) is a runtime
+            // lookup. The loops below must stay free of generic-dependent type tests
+            // (see AnonymousSubscriberBase).
+            var commandType = typeof(T);
+
+            var anonymousSubscribers = source.anonymousSubscribers.AsSpan();
+            for (var i = anonymousSubscribers.Length - 1; i >= 0; i--)
             {
-                switch (subscribers[i])
+                var anonymous = anonymousSubscribers[i];
+                if (anonymous != null && ReferenceEquals(anonymous.CommandType, commandType))
                 {
-                    case AnonymousSubscriber<T> x: // devirtualization
-                        x.ReceiveInternal(command, context);
-                        break;
-                    case { } x:
-                        x.Receive(command, context);
-                        break;
+                    Unsafe.As<Action<T, PublishContext>>(anonymous.Callback).Invoke(command, context);
                 }
             }
 
-            var asyncSubscribersLastIndex = source.asyncSubscribers.LastIndex;
-            var childRoutersLastIndex = source.childRouters.LastIndex;
-            if (asyncSubscribersLastIndex < 0 && childRoutersLastIndex < 0) return default;
-
-            var whenAll = ContextPool<ReusableWhenAllSource>.Rent();
-            whenAll.Reset((asyncSubscribersLastIndex + 1) + (childRoutersLastIndex + 1));
-
-            if (asyncSubscribersLastIndex >= 0)
+            var subscribers = source.subscribers.AsSpan();
+            for (var i = subscribers.Length - 1; i >= 0; i--)
             {
-                var asyncSubscribers = source.asyncSubscribers.Values;
-                for (var i = asyncSubscribersLastIndex; i >= 0; i--)
+                subscribers[i]?.Receive(command, context);
+            }
+
+            var asyncAnonymousSubscribers = source.asyncAnonymousSubscribers.AsSpan();
+            var asyncSubscribers = source.asyncSubscribers.AsSpan();
+            var childRouters = source.childRouters.AsSpan();
+            if (asyncAnonymousSubscribers.IsEmpty && asyncSubscribers.IsEmpty && childRouters.IsEmpty)
+            {
+                return default;
+            }
+
+            var whenAll = new WhenAllBuilder();
+
+            for (var i = asyncAnonymousSubscribers.Length - 1; i >= 0; i--)
+            {
+                var anonymous = asyncAnonymousSubscribers[i];
+                if (anonymous != null && ReferenceEquals(anonymous.CommandType, commandType))
                 {
-                    switch (asyncSubscribers[i])
-                    {
-                        case AsyncAnonymousSubscriber<T> x: // Devirtualization
-                            whenAll.AddTask(x.ReceiveInternalAsync(command, context));
-                            break;
-                        case { } x:
-                            whenAll.AddTask(x.ReceiveAsync(command, context));
-                            break;
-                        default:
-                            whenAll.IncrementSuccessfully();
-                            break;
-                    }
+                    var callback = Unsafe.As<PublishContinuation<T>>(anonymous.Callback);
+                    whenAll.Add(anonymous.Ordering is { } ordering
+                        ? ordering.InvokeAsync(command, context, callback)
+                        : callback(command, context));
                 }
             }
 
-            if (childRoutersLastIndex >= 0)
+            for (var i = asyncSubscribers.Length - 1; i >= 0; i--)
             {
-                var children = source.childRouters.Values;
-                for (var i = childRoutersLastIndex; i >= 0; i--)
+                if (asyncSubscribers[i] is { } x)
                 {
-                    if (children[i] is { } child)
-                    {
-                        whenAll.AddTask(child.FanOutAsync(command, context.CancellationToken));
-                    }
-                    else
-                    {
-                        whenAll.IncrementSuccessfully();
-                    }
+                    whenAll.Add(x.ReceiveAsync(command, context));
                 }
             }
 
-            return new ValueTask(whenAll, whenAll.Version);
+            for (var i = childRouters.Length - 1; i >= 0; i--)
+            {
+                if (childRouters[i] is { } child)
+                {
+                    whenAll.Add(child.FanOutAsync(command, context.CancellationToken));
+                }
+            }
+
+            return whenAll.Build();
         }
     }
 }

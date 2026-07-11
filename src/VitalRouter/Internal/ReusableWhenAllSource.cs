@@ -102,6 +102,36 @@ namespace VitalRouter.Internal
             continuationState = null;
         }
 
+        // Starts an "uncommitted" session: pending tasks may be registered via
+        // AddPending before the total count is known. completedCount can never
+        // equal -1, so completions that arrive before Commit only count up.
+        public void ResetUncommitted()
+        {
+            Reset(-1);
+        }
+
+        // Registers a task that is known to be still pending.
+        public void AddPending(ValueTask task)
+        {
+            AwaiterNode.RegisterUnsafeOnCompleted(this, task.GetAwaiter());
+        }
+
+        // Finalizes an uncommitted session once all pending tasks are registered.
+        public void Commit(int totalTaskCount, ExceptionDispatchInfo? capturedError)
+        {
+            if (capturedError != null)
+            {
+                error = capturedError;
+            }
+            // Full fence so that either this thread observes the final completedCount,
+            // or the completing thread observes the committed taskCount (or both).
+            Interlocked.Exchange(ref taskCount, totalTaskCount);
+            if (capturedError != null || Volatile.Read(ref completedCount) == totalTaskCount)
+            {
+                TryInvokeContinuation();
+            }
+        }
+
         public void AddTask(ValueTask task)
         {
             if (task.IsCompletedSuccessfully)
@@ -127,15 +157,15 @@ namespace VitalRouter.Internal
 
         public ValueTaskSourceStatus GetStatus(short token)
         {
-            if (completedCount == taskCount)
-            {
-                return ValueTaskSourceStatus.Succeeded;
-            }
             if (error != null)
             {
                 return error.SourceException is OperationCanceledException
                     ? ValueTaskSourceStatus.Canceled
                     : ValueTaskSourceStatus.Faulted;
+            }
+            if (completedCount == taskCount)
+            {
+                return ValueTaskSourceStatus.Succeeded;
             }
             return ValueTaskSourceStatus.Pending;
         }
@@ -188,7 +218,7 @@ namespace VitalRouter.Internal
 
         public void IncrementSuccessfully()
         {
-            if (Interlocked.Increment(ref completedCount) == taskCount)
+            if (Interlocked.Increment(ref completedCount) == Volatile.Read(ref taskCount))
             {
                 TryInvokeContinuation();
             }
@@ -253,6 +283,90 @@ namespace VitalRouter.Internal
             self.invokeContinuation = null;
             self.continuationState = null;
             invokeContinuation(invokeState);
+        }
+    }
+
+    // Zero-allocation when-all accumulator.
+    // Tasks that have already completed synchronously are folded away on the spot:
+    // if every task completed successfully, Build() returns a default ValueTask;
+    // if exactly one task is pending, it is returned as-is. A pooled
+    // ReusableWhenAllSource is rented only when two or more tasks are pending.
+    struct WhenAllBuilder
+    {
+        ReusableWhenAllSource? whenAll;
+        ValueTask firstPending;
+        bool hasFirstPending;
+        int pendingCount;
+        ExceptionDispatchInfo? error;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Add(ValueTask task)
+        {
+            if (task.IsCompletedSuccessfully)
+            {
+                return;
+            }
+            AddSlow(task);
+        }
+
+        void AddSlow(ValueTask task)
+        {
+            if (task.IsCompleted) // faulted or canceled
+            {
+                try
+                {
+                    task.GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    error = ExceptionDispatchInfo.Capture(ex);
+                }
+                return;
+            }
+            if (!hasFirstPending)
+            {
+                firstPending = task;
+                hasFirstPending = true;
+                return;
+            }
+            if (whenAll == null)
+            {
+                whenAll = ContextPool<ReusableWhenAllSource>.Rent();
+                whenAll.ResetUncommitted();
+                whenAll.AddPending(firstPending);
+                pendingCount = 1;
+            }
+            whenAll.AddPending(task);
+            pendingCount++;
+        }
+
+        public ValueTask Build()
+        {
+            if (whenAll != null)
+            {
+                whenAll.Commit(pendingCount, error);
+                return new ValueTask(whenAll, whenAll.Version);
+            }
+            if (error != null)
+            {
+                return hasFirstPending
+                    ? AwaitThenThrowAsync(firstPending, error)
+                    : new ValueTask(Task.FromException(error.SourceException));
+            }
+            return hasFirstPending ? firstPending : default;
+        }
+
+        static async ValueTask AwaitThenThrowAsync(ValueTask pending, ExceptionDispatchInfo error)
+        {
+            try
+            {
+                await pending;
+            }
+            catch
+            {
+                // Matches ReusableWhenAllSource semantics: a single captured error wins.
+            }
+            error.Throw();
         }
     }
 }

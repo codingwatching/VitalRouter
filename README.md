@@ -273,6 +273,36 @@ Control command publishing via external MRuby scripts. MRuby fibers and C# async
 
 ---
 
+## Performance
+
+Publishing allocates zero extra heap memory; if `ICommand` is a struct, no boxing occurs.
+Performance is on the same level as plain event dispatching, so it can be used for very granular messaging in games.
+
+Below are simple Publish benchmarks (8 subscribers per message; BenchmarkDotNet v0.14.0, .NET 9.0.5, Apple M4).
+
+Synchronous subscribers:
+
+| Method                              | Mean         | Allocated |
+|------------------------------------ |-------------:|----------:|
+| 'Publish (ZeroMessenger)'           |     5.756 ns |         - |
+| 'Publish (MessagePipe)'             |     8.900 ns |         - |
+| 'Publish (R3 Subject)'              |    12.827 ns |         - |
+| 'Publish (VitalRouter)'             |    12.869 ns |         - |
+| 'Publish (System.Reactive Subject)' |    14.598 ns |         - |
+| 'Publish (MediatR)'                 |    36.204 ns |      64 B |
+| 'Publish (PubSub)'                  |    88.976 ns |     192 B |
+| 'Publish (Prism)'                   | 1,087.741 ns |    1552 B |
+
+Asynchronous subscribers (awaiting until all subscribers complete):
+
+| Method                    | Mean      | Allocated |
+|-------------------------- |----------:|----------:|
+| 'Publish (ZeroMessenger)' |  26.63 ns |         - |
+| 'Publish (VitalRouter)'   |  27.01 ns |         - |
+| 'Publish (MessagePipe)'   |  36.06 ns |      40 B |
+| 'Publish (MediatR)'       |  39.70 ns |      64 B |
+| 'Publish (PubSub)'        | 102.57 ns |     192 B |
+
 ## Appendix: Best Practices
 
 Based on large-scale production usage (e.g., HybridFrame):
