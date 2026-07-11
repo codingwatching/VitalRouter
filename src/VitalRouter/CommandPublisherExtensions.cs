@@ -42,12 +42,35 @@ public static class CommandPublisherExtensions
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Enqueue<T>(this ICommandPublisher publisher, T command, CancellationToken cancellation = default)
+    public static void Publish<T>(this ICommandPublisher publisher, T command, CancellationToken cancellation = default)
         where T : ICommand
     {
         publisher.PublishAsync(command, cancellation);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Publish(
+        this ICommandPublisher publisher,
+        Type commandType,
+        object command,
+        CancellationToken cancellation = default)
+    {
+        publisher.PublishAsync(commandType, command, cancellation);
+    }
+
+    /// <summary>
+    /// Alias for <see cref="Publish{T}(ICommandPublisher, T, CancellationToken)"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Enqueue<T>(this ICommandPublisher publisher, T command, CancellationToken cancellation = default)
+        where T : ICommand
+    {
+        publisher.Publish(command, cancellation);
+    }
+
+    /// <summary>
+    /// Alias for <see cref="Publish(ICommandPublisher, Type, object, CancellationToken)"/>.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Enqueue(
         this ICommandPublisher publisher,
@@ -55,7 +78,7 @@ public static class CommandPublisherExtensions
         object command,
         CancellationToken cancellation = default)
     {
-        publisher.PublishAsync(commandType, command, cancellation);
+        publisher.Publish(commandType, command, cancellation);
     }
 }
 }
