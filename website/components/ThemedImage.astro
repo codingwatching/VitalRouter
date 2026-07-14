@@ -1,0 +1,25 @@
+---
+// Shows the image matching the active color theme. Blume stamps
+// `data-theme` on <html> before paint, so the swap never flashes.
+interface Props {
+  light: string;
+  dark: string;
+  alt?: string;
+}
+const { light, dark, alt = "" } = Astro.props;
+---
+
+<img src={light} alt={alt} loading="lazy" class="themed-image themed-image-light" />
+<img src={dark} alt={alt} loading="lazy" class="themed-image themed-image-dark" />
+
+<style is:global>
+  .themed-image-dark {
+    display: none;
+  }
+  html[data-theme="dark"] .themed-image-dark {
+    display: block;
+  }
+  html[data-theme="dark"] .themed-image-light {
+    display: none;
+  }
+</style>
